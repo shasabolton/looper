@@ -1,0 +1,117 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  background: #050505;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+main {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+.looper {
+  align-items: center;
+  background: #050505;
+  border: 0;
+  color: #f6f6f6;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  height: 100dvh;
+  justify-content: center;
+  padding: clamp(1.5rem, 5vw, 4rem);
+  position: relative;
+  text-align: center;
+  touch-action: manipulation;
+  transition:
+    background 180ms ease,
+    color 180ms ease,
+    filter 180ms ease;
+  user-select: none;
+  width: 100vw;
+}
+
+.looper::before {
+  border: 2px solid color-mix(in srgb, currentColor 32%, transparent);
+  border-radius: 999px;
+  content: "";
+  height: min(54vmin, 26rem);
+  left: 50%;
+  opacity: 0.7;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(54vmin, 26rem);
+}
+
+.looper:focus-visible {
+  outline: 0.5rem solid rgba(255, 255, 255, 0.75);
+  outline-offset: -0.75rem;
+}
+
+.looper.recording {
+  animation: recordPulse 900ms ease-in-out infinite;
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.18), transparent 34vmin),
+    #d81919;
+  color: #fff;
+}
+
+.looper.playing {
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.16), transparent 36vmin),
+    #09a64a;
+  color: #f7fff9;
+}
+
+.looper.stopped {
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.08), transparent 32vmin),
+    #050505;
+  color: #f4f4f4;
+}
+
+.state-text {
+  font-size: clamp(3.2rem, 13vw, 10rem);
+  font-weight: 900;
+  letter-spacing: -0.08em;
+  line-height: 0.9;
+  position: relative;
+  text-transform: uppercase;
+  z-index: 1;
+}
+
+.hint-text {
+  font-size: clamp(1rem, 3vw, 1.75rem);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  max-width: 38rem;
+  opacity: 0.82;
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes recordPulse {
+  0%,
+  100% {
+    filter: saturate(1) brightness(1);
+  }
+
+  50% {
+    filter: saturate(1.25) brightness(1.18);
+  }
+}

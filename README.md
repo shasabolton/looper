@@ -11,6 +11,10 @@ A one-button browser audio looper built with vanilla JavaScript. It is a static 
 - Hold: undo the latest layer. Holding while recording cancels that take.
 - Double tap while playing: stop playback.
 - Tap while stopped with a saved loop: start playback.
+- Optional hands-free trigger:
+  - Turn on **Face trigger**.
+  - Nod down/up or up/down to press the button.
+  - Shake side-to-side to hold/undo.
 
 The full screen is the button and status light:
 
@@ -18,7 +22,9 @@ The full screen is the button and status light:
 - Green: playing.
 - Black: stopped.
 
-Use headphones for clean overdubs. Browser microphone access requires HTTPS, which GitHub Pages provides, or `localhost` during development.
+Use headphones for clean overdubs. Browser microphone and camera access require HTTPS, which GitHub Pages provides, or `localhost` during development.
+
+The face trigger runs entirely in the browser. It loads lightweight BlazeFace tracking only after you enable it, uses one face at low camera resolution, and throttles detection to roughly 10 frames per second for slower phones.
 
 ## Run locally
 

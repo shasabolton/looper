@@ -1,10 +1,23 @@
 const button = document.querySelector("#looper");
 const stateText = document.querySelector("#stateText");
 const hintText = document.querySelector("#hintText");
+const faceToggle = document.querySelector("#faceToggle");
+const faceStatus = document.querySelector("#faceStatus");
+const faceVideo = document.querySelector("#faceVideo");
 
 const DOUBLE_TAP_MS = 300;
 const HOLD_MS = 650;
 const MIN_LOOP_SECONDS = 0.25;
+const FACE_FRAME_MS = 100;
+const FACE_GESTURE_COOLDOWN_MS = 750;
+const FACE_SEQUENCE_MS = 1200;
+const FACE_SMOOTHING = 0.35;
+const NOD_DIRECTION_THRESHOLD = 0.08;
+const SHAKE_DIRECTION_THRESHOLD = 0.08;
+const BLAZEFACE_SCRIPTS = [
+  "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js",
+  "https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@latest/dist/blazeface.min.js",
+];
 
 let audioContext;
 let micStream;
@@ -27,6 +40,19 @@ let pendingTapTimer = 0;
 let lastTapAt = 0;
 let playbackStartedByTapAt = 0;
 let nextLayerId = 1;
+
+let faceEnabled = false;
+let faceLoading = false;
+let faceModel = null;
+let faceStream = null;
+let faceLoopId = 0;
+let faceScriptsLoaded = false;
+let lastFaceFrameAt = 0;
+let lastFaceGestureAt = 0;
+let smoothedFacePoint = null;
+let faceStatusTimer = 0;
+let nodAxis = createAxisTracker(NOD_DIRECTION_THRESHOLD);
+let shakeAxis = createAxisTracker(SHAKE_DIRECTION_THRESHOLD);
 
 function formatTime(seconds) {
   if (!seconds) return "0.0s";
@@ -86,6 +112,300 @@ function updateUi() {
 
   stateText.textContent = "Tap to record";
   hintText.textContent = "Use headphones for clean overdubs. Works best on HTTPS.";
+}
+
+function createAxisTracker(threshold) {
+  return {
+    direction: null,
+    extreme: null,
+    lastDirection: null,
+    lastDirectionAt: 0,
+    threshold,
+  };
+}
+
+function resetFaceGestureTracking() {
+  smoothedFacePoint = null;
+  nodAxis = createAxisTracker(NOD_DIRECTION_THRESHOLD);
+  shakeAxis = createAxisTracker(SHAKE_DIRECTION_THRESHOLD);
+}
+
+function setFaceStatus(message, { temporary = false } = {}) {
+  if (faceStatusTimer) {
+    clearTimeout(faceStatusTimer);
+    faceStatusTimer = 0;
+  }
+
+  faceStatus.textContent = message;
+
+  if (temporary) {
+    faceStatusTimer = window.setTimeout(() => {
+      faceStatus.textContent = faceEnabled
+        ? "Watching for nod press or shake undo."
+        : "Nod = press. Shake = hold/undo.";
+    }, 1200);
+  }
+}
+
+function updateFaceToggle() {
+  faceToggle.classList.toggle("active", faceEnabled);
+  faceToggle.textContent = faceEnabled ? "Face trigger on" : "Face trigger off";
+  faceVideo.classList.toggle("active", faceEnabled);
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", reject, { once: true });
+      if (existing.dataset.loaded === "true") resolve();
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.addEventListener(
+      "load",
+      () => {
+        script.dataset.loaded = "true";
+        resolve();
+      },
+      { once: true },
+    );
+    script.addEventListener("error", reject, { once: true });
+    document.head.append(script);
+  });
+}
+
+async function ensureBlazeFaceReady() {
+  if (!faceScriptsLoaded) {
+    for (const src of BLAZEFACE_SCRIPTS) {
+      await loadScript(src);
+    }
+    faceScriptsLoaded = true;
+  }
+
+  if (!window.tf || !window.blazeface) {
+    throw new Error("BlazeFace did not load.");
+  }
+
+  try {
+    await window.tf.setBackend("webgl");
+  } catch {
+    await window.tf.setBackend("cpu");
+  }
+  await window.tf.ready();
+
+  if (!faceModel) {
+    faceModel = await window.blazeface.load();
+  }
+}
+
+function distance(a, b) {
+  if (!a || !b) return 0;
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+function midpoint(a, b) {
+  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+}
+
+function getFacePoint(prediction) {
+  const landmarks = prediction.landmarks || [];
+  const rightEye = landmarks[0];
+  const leftEye = landmarks[1];
+  const nose = landmarks[2];
+  const rightEar = landmarks[4];
+  const leftEar = landmarks[5];
+  const topLeft = prediction.topLeft;
+  const bottomRight = prediction.bottomRight;
+
+  if (!rightEye || !leftEye || !nose) return null;
+
+  const faceWidth = topLeft && bottomRight ? Math.abs(bottomRight[0] - topLeft[0]) : 0;
+  const earSpacing = distance(rightEar, leftEar);
+  const eyeSpacing = distance(rightEye, leftEye);
+  const scale = earSpacing || eyeSpacing * 2.2 || faceWidth;
+  if (!scale) return null;
+
+  const eyeCenter = midpoint(rightEye, leftEye);
+  return {
+    x: (nose[0] - eyeCenter[0]) / scale,
+    y: (nose[1] - eyeCenter[1]) / scale,
+  };
+}
+
+function smoothFacePoint(point) {
+  if (!smoothedFacePoint) {
+    smoothedFacePoint = point;
+    return point;
+  }
+
+  smoothedFacePoint = {
+    x: smoothedFacePoint.x + (point.x - smoothedFacePoint.x) * FACE_SMOOTHING,
+    y: smoothedFacePoint.y + (point.y - smoothedFacePoint.y) * FACE_SMOOTHING,
+  };
+  return smoothedFacePoint;
+}
+
+function updateAxis(axis, value) {
+  if (axis.extreme === null) {
+    axis.extreme = value;
+    return null;
+  }
+
+  if (axis.direction === "positive") {
+    axis.extreme = Math.max(axis.extreme, value);
+    if (axis.extreme - value >= axis.threshold) {
+      axis.direction = "negative";
+      axis.extreme = value;
+      return "negative";
+    }
+    return null;
+  }
+
+  if (axis.direction === "negative") {
+    axis.extreme = Math.min(axis.extreme, value);
+    if (value - axis.extreme >= axis.threshold) {
+      axis.direction = "positive";
+      axis.extreme = value;
+      return "positive";
+    }
+    return null;
+  }
+
+  const delta = value - axis.extreme;
+  if (delta >= axis.threshold) {
+    axis.direction = "positive";
+    axis.extreme = value;
+    return "positive";
+  }
+
+  if (delta <= -axis.threshold) {
+    axis.direction = "negative";
+    axis.extreme = value;
+    return "negative";
+  }
+
+  axis.extreme = axis.extreme + delta * 0.08;
+  return null;
+}
+
+function maybeTriggerFaceGesture(kind, axis, direction) {
+  const now = performance.now();
+  if (now - lastFaceGestureAt < FACE_GESTURE_COOLDOWN_MS) return;
+
+  const completedSequence =
+    axis.lastDirection &&
+    axis.lastDirection !== direction &&
+    now - axis.lastDirectionAt <= FACE_SEQUENCE_MS;
+
+  axis.lastDirection = direction;
+  axis.lastDirectionAt = now;
+
+  if (!completedSequence) return;
+
+  lastFaceGestureAt = now;
+  axis.lastDirection = null;
+  axis.lastDirectionAt = 0;
+
+  if (kind === "nod") {
+    setFaceStatus("Nod detected: press.", { temporary: true });
+    handleTap();
+  } else {
+    setFaceStatus("Shake detected: hold/undo.", { temporary: true });
+    undoLast();
+  }
+}
+
+function processFacePrediction(prediction) {
+  const point = getFacePoint(prediction);
+  if (!point) return;
+
+  const smoothed = smoothFacePoint(point);
+  const nodDirection = updateAxis(nodAxis, smoothed.y);
+  const shakeDirection = updateAxis(shakeAxis, smoothed.x);
+
+  if (nodDirection) {
+    maybeTriggerFaceGesture("nod", nodAxis, nodDirection);
+  }
+
+  if (shakeDirection) {
+    maybeTriggerFaceGesture("shake", shakeAxis, shakeDirection);
+  }
+}
+
+async function runFaceLoop(now = 0) {
+  if (!faceEnabled) return;
+
+  if (now - lastFaceFrameAt >= FACE_FRAME_MS && faceVideo.readyState >= 2) {
+    lastFaceFrameAt = now;
+    try {
+      const predictions = await faceModel.estimateFaces(faceVideo, false);
+      if (predictions.length > 0) {
+        processFacePrediction(predictions[0]);
+      }
+    } catch (error) {
+      setFaceStatus(error.message || "Face tracking paused.");
+    }
+  }
+
+  if (!faceEnabled) return;
+  faceLoopId = window.requestAnimationFrame(runFaceLoop);
+}
+
+async function enableFaceTrigger() {
+  if (faceEnabled || faceLoading) return;
+
+  faceLoading = true;
+  faceToggle.disabled = true;
+  setFaceStatus("Loading lightweight face tracker...");
+
+  try {
+    await ensureBlazeFaceReady();
+    faceStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: "user",
+        frameRate: { ideal: 12, max: 15 },
+        height: { ideal: 240 },
+        width: { ideal: 320 },
+      },
+    });
+
+    faceVideo.srcObject = faceStream;
+    await faceVideo.play();
+    resetFaceGestureTracking();
+    faceEnabled = true;
+    lastFaceFrameAt = 0;
+    updateFaceToggle();
+    setFaceStatus("Watching for nod press or shake undo.");
+    faceLoopId = window.requestAnimationFrame(runFaceLoop);
+  } catch (error) {
+    setFaceStatus(error.message || "Could not start the camera trigger.");
+    disableFaceTrigger();
+  } finally {
+    faceLoading = false;
+    faceToggle.disabled = false;
+  }
+}
+
+function disableFaceTrigger() {
+  faceEnabled = false;
+  if (faceLoopId) {
+    window.cancelAnimationFrame(faceLoopId);
+    faceLoopId = 0;
+  }
+  faceStream?.getTracks().forEach((track) => track.stop());
+  faceStream = null;
+  faceVideo.srcObject = null;
+  resetFaceGestureTracking();
+  updateFaceToggle();
+  if (!faceLoading) {
+    setFaceStatus("Nod = press. Shake = hold/undo.");
+  }
 }
 
 function getSupportedMimeType() {
@@ -446,9 +766,19 @@ button.addEventListener("keyup", (event) => {
   }
 });
 
+faceToggle.addEventListener("click", () => {
+  if (faceEnabled) {
+    disableFaceTrigger();
+  } else {
+    enableFaceTrigger();
+  }
+});
+
 window.addEventListener("beforeunload", () => {
   stopSources();
   micStream?.getTracks().forEach((track) => track.stop());
+  faceStream?.getTracks().forEach((track) => track.stop());
 });
 
 updateUi();
+updateFaceToggle();

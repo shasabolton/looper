@@ -13,6 +13,11 @@
         <span id="stateText" class="state-text">Tap to record</span>
         <span id="hintText" class="hint-text">Double tap stops playback. Hold to undo.</span>
       </button>
+      <section class="face-panel" aria-label="Hands-free camera trigger">
+        <button id="faceToggle" class="face-toggle" type="button">Face trigger off</button>
+        <p id="faceStatus" class="face-status">Nod = press. Shake = hold/undo.</p>
+        <video id="faceVideo" class="face-video" autoplay muted playsinline></video>
+      </section>
     </main>
     <script src="./app.js" defer></script>
   </body>
